@@ -205,8 +205,13 @@ pub fn write_notebook(path: &Path, notebook: &Notebook) -> Result<(), Error> {
     };
     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
     let temp = dir.join(format!(".{file_name}.{}.tmp", process::id()));
-    let result = write_file(&temp, render_notebook(notebook).as_bytes())
-        .and_then(|()| fs::rename(&temp, path));
+    let result = write_file(&temp, render_notebook(notebook).as_bytes()).and_then(|()| {
+        // Keep any permissions the user set on the existing Notebook.
+        if let Ok(metadata) = fs::metadata(path) {
+            fs::set_permissions(&temp, metadata.permissions())?;
+        }
+        fs::rename(&temp, path)
+    });
     if let Err(source) = result {
         let _ = fs::remove_file(&temp);
         return Err(write_error(source));
@@ -214,8 +219,13 @@ pub fn write_notebook(path: &Path, notebook: &Notebook) -> Result<(), Error> {
     Ok(())
 }
 
+/// Writes `content` to a new file at `path`; fails if anything, even a
+/// symlink, already exists there.
 fn write_file(path: &Path, content: &[u8]) -> io::Result<()> {
-    let mut file = fs::File::create(path)?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
     file.write_all(content)?;
     file.sync_all()
 }
@@ -316,5 +326,39 @@ mod tests {
             parse_notebook(&json, Path::new("n.json")).unwrap(),
             notebook
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_notebook_does_not_follow_a_symlink_at_the_temporary_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        fs::write(&target, "keep me").unwrap();
+        let temp = dir
+            .path()
+            .join(format!(".notebook.json.{}.tmp", process::id()));
+        std::os::unix::fs::symlink(&target, &temp).unwrap();
+
+        let result = write_notebook(&dir.path().join("notebook.json"), &Notebook::default());
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "keep me");
+        assert!(fs::symlink_metadata(&temp).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_notebook_keeps_the_permissions_of_the_existing_notebook() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notebook.json");
+        write_notebook(&path, &Notebook::default()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        write_notebook(&path, &Notebook::default()).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

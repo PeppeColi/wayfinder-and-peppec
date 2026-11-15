@@ -62,7 +62,10 @@ fn notebook_flag_is_accepted_after_the_command() {
     assert!(!env.notebook().exists());
 }
 
+// On Windows the data directory does not follow HOME or XDG_DATA_HOME, so
+// the test could not stay inside its temporary directory.
 #[test]
+#[cfg(not(windows))]
 fn add_uses_the_default_location_without_notes_notebook() {
     let env = TestEnv::new();
 
