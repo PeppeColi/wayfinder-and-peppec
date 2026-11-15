@@ -9,7 +9,7 @@ A piece of text saved by the user, with the instant it was created and zero or m
 _Avoid_: Entry, memo, record
 
 **Tag**:
-A short label attached to a note, used to find it again.
+A short label attached to a note, used to find it again. Tags that differ only in capitalisation are the same tag.
 _Avoid_: Label, category, keyword
 
 **Notebook**:
