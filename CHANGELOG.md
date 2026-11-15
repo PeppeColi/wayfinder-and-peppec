@@ -7,3 +7,7 @@ The agent adds one line under "Unreleased" in each pull request; when you releas
 lines under a new heading with the version and the date.
 
 ## [Unreleased]
+
+### Added
+
+- `notes add "<text>"` saves a note to the Notebook, a JSON file in your data directory or wherever `--notebook` / `NOTES_NOTEBOOK` points.
