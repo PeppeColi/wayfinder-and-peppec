@@ -169,3 +169,116 @@ fn add_help_shows_text_and_tag() {
         .stdout(predicates::str::contains("<TEXT>"))
         .stdout(predicates::str::contains("-t, --tag <TAG>"));
 }
+
+const INVALID_TAG_HINT: &str =
+    "use 1-32 letters, digits, '-' or '_', starting with a letter or digit";
+
+fn stored_tags(env: &TestEnv) -> serde_json::Value {
+    read_json(&env.notebook())["notes"][0]["tags"].clone()
+}
+
+#[test]
+fn tags_are_lowercased_and_deduplicated() {
+    let env = TestEnv::new();
+
+    env.notes()
+        .args([
+            "add", "Buy milk", "-t", "Home", "-t", "shopping", "-t", "HOME",
+        ])
+        .assert()
+        .success()
+        .stdout("")
+        .stderr("");
+
+    assert_eq!(stored_tags(&env), json!(["home", "shopping"]));
+}
+
+#[test]
+fn duplicate_tags_keep_the_first_occurrence_order() {
+    let env = TestEnv::new();
+
+    env.notes()
+        .args(["add", "x", "-t", "b", "-t", "a", "-t", "B"])
+        .assert()
+        .success();
+
+    assert_eq!(stored_tags(&env), json!(["b", "a"]));
+}
+
+#[test]
+fn no_tags_stores_an_empty_array() {
+    let env = TestEnv::new();
+
+    env.notes().args(["add", "Call Anna"]).assert().success();
+
+    assert_eq!(stored_tags(&env), json!([]));
+}
+
+#[test]
+fn valid_tag_characters_and_maximum_length_are_accepted() {
+    let env = TestEnv::new();
+    let long = "A".repeat(32);
+
+    env.notes()
+        .args(["add", "x", "-t", "a-b_9", "-t", &long])
+        .assert()
+        .success();
+
+    assert_eq!(stored_tags(&env), json!(["a-b_9", "a".repeat(32)]));
+}
+
+#[test]
+fn invalid_tags_are_rejected_and_nothing_is_saved() {
+    let too_long = "a".repeat(33);
+    for tag in ["caffè", "", too_long.as_str(), "_x", "a b"] {
+        let env = TestEnv::new();
+
+        env.notes()
+            .args(["add", "x", "-t", tag])
+            .assert()
+            .code(1)
+            .stdout("")
+            .stderr(format!("error: invalid tag '{tag}': {INVALID_TAG_HINT}\n"));
+
+        assert!(!env.notebook().exists());
+    }
+}
+
+#[test]
+fn invalid_tag_leaves_an_existing_notebook_unchanged() {
+    let env = TestEnv::new();
+    env.notes().args(["add", "first"]).assert().success();
+    let before = fs::read(env.notebook()).unwrap();
+
+    env.notes()
+        .args(["add", "x", "-t", "caffè"])
+        .assert()
+        .code(1);
+
+    assert_eq!(fs::read(env.notebook()).unwrap(), before);
+}
+
+#[test]
+fn the_first_invalid_tag_is_reported() {
+    let env = TestEnv::new();
+
+    env.notes()
+        .args(["add", "x", "-t", "ok", "-t", "b@d", "-t", "c!"])
+        .assert()
+        .code(1)
+        .stderr(format!("error: invalid tag 'b@d': {INVALID_TAG_HINT}\n"));
+
+    assert!(!env.notebook().exists());
+}
+
+#[test]
+fn an_invalid_tag_is_reported_before_an_invalid_clock() {
+    let env = TestEnv::new();
+
+    env.notes()
+        .env("NOTES_NOW", "xyz")
+        .args(["add", "x", "-t", "caffè"])
+        .assert()
+        .code(1)
+        .stderr(format!("error: invalid tag 'caffè': {INVALID_TAG_HINT}\n"));
+}

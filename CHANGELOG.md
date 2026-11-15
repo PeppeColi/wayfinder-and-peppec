@@ -11,3 +11,4 @@ lines under a new heading with the version and the date.
 ### Added
 
 - `notes add "<text>"` saves a note to the Notebook, a JSON file in your data directory or wherever `--notebook` / `NOTES_NOTEBOOK` points.
+- `notes add -t <TAG>` checks tags (1-32 letters, digits, `-` or `_`), stores them in lowercase without repeats, and rejects an invalid tag without saving anything.
