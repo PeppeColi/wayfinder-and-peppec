@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "peppec skills --hook 2> /dev/null || gh peppec skills --hook 2> /dev/null || true",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
