@@ -88,7 +88,16 @@ fn run(cli: Cli) -> Result<(), wayfinder_and_peppec::Error> {
             let mut out = io::BufWriter::new(io::stdout().lock());
             wayfinder_and_peppec::list(&path, &tz, &mut out, &mut io::stderr().lock())
         }
-        Command::Search { .. } | Command::Export { .. } => Ok(()),
+        Command::Search { tag } => {
+            let path = wayfinder_and_peppec::notebook_location(
+                cli.notebook.as_deref(),
+                dirs::data_dir().as_deref(),
+            )?;
+            let tz = jiff::tz::TimeZone::system();
+            let mut out = io::BufWriter::new(io::stdout().lock());
+            wayfinder_and_peppec::search(&path, &tag, &tz, &mut out, &mut io::stderr().lock())
+        }
+        Command::Export { .. } => Ok(()),
     }
 }
 
