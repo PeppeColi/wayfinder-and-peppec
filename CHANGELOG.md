@@ -16,3 +16,4 @@ lines under a new heading with the version and the date.
 - `notes list` prints every note, most recent first, with its local date and time, text and tags, and says `No notes.` on stderr when there are none.
 - `notes search <TAG>` prints the notes with that tag (ignoring capitalisation), in the same layout and order as `list`, and says `No notes tagged <tag>.` on stderr when there are none.
 - `notes export [--force] <PATH>` writes the whole Notebook to a Markdown file, most recent note first; it refuses to replace an existing file without `--force`, never creates directories and never overwrites the Notebook itself.
+- Every command reports Notebook problems (unreadable, invalid, unsupported version, cannot create directory, cannot write) as one `error:` line with the path and reason, checking inputs first so that invalid input never touches the Notebook.

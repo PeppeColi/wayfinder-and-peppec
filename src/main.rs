@@ -89,6 +89,7 @@ fn run(cli: Cli) -> Result<(), wayfinder_and_peppec::Error> {
             wayfinder_and_peppec::list(&path, &tz, &mut out, &mut io::stderr().lock())
         }
         Command::Search { tag } => {
+            wayfinder_and_peppec::validate_tag(&tag)?;
             let path = wayfinder_and_peppec::notebook_location(
                 cli.notebook.as_deref(),
                 dirs::data_dir().as_deref(),
