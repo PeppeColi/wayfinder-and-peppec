@@ -5,7 +5,6 @@ mod common;
 use std::fs;
 
 use common::TestEnv;
-use predicates::prelude::*;
 use predicates::str::contains;
 
 /// The line `notes ping -n <times>` must print: `pong` `times` times, joined
