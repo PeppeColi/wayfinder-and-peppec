@@ -48,6 +48,8 @@ struct NotebookFileIn {
 /// `error: `.
 #[derive(Debug)]
 pub enum Error {
+    /// A tag breaks the Tag rules (tag as given).
+    InvalidTag(String),
     /// `NOTES_NOW` does not hold an RFC 3339 instant (value as given).
     InvalidNow(String),
     /// No data directory and no `--notebook`/`NOTES_NOTEBOOK`.
@@ -67,6 +69,12 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::InvalidTag(tag) => {
+                write!(
+                    f,
+                    "invalid tag '{tag}': use 1-32 letters, digits, '-' or '_', starting with a letter or digit"
+                )
+            }
             Error::InvalidNow(value) => {
                 write!(
                     f,
@@ -118,6 +126,37 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// Longest valid tag, in characters.
+const MAX_TAG_LEN: usize = 32;
+
+/// Checks the Tag rules and returns the tag in lowercase: 1 to 32 ASCII
+/// letters, digits, `-` or `_`, starting with a letter or a digit.
+pub fn validate_tag(tag: &str) -> Result<String, Error> {
+    let valid = (1..=MAX_TAG_LEN).contains(&tag.len())
+        && tag.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if valid {
+        Ok(tag.to_ascii_lowercase())
+    } else {
+        Err(Error::InvalidTag(tag.to_owned()))
+    }
+}
+
+/// Validates and lowercases `tags` in the order given, dropping repeats and
+/// keeping the order of first occurrence. The first invalid tag is the error.
+pub fn normalise_tags<S: AsRef<str>>(tags: &[S]) -> Result<Vec<String>, Error> {
+    let mut result: Vec<String> = Vec::new();
+    for tag in tags {
+        let tag = validate_tag(tag.as_ref())?;
+        if !result.contains(&tag) {
+            result.push(tag);
+        }
+    }
+    Ok(result)
+}
 
 /// Parses the value of `NOTES_NOW`: one RFC 3339 instant with offset.
 pub fn parse_now(value: &str) -> Result<Timestamp, Error> {
@@ -281,6 +320,53 @@ mod tests {
             err.to_string(),
             "cannot find a data directory; use --notebook or NOTES_NOTEBOOK"
         );
+    }
+
+    #[test]
+    fn validate_tag_accepts_the_boundaries() {
+        assert_eq!(validate_tag("a").unwrap(), "a");
+        assert_eq!(validate_tag("9").unwrap(), "9");
+        assert_eq!(validate_tag("a-b_9").unwrap(), "a-b_9");
+        assert_eq!(validate_tag("x-").unwrap(), "x-");
+        assert_eq!(validate_tag(&"A".repeat(32)).unwrap(), "a".repeat(32));
+    }
+
+    #[test]
+    fn validate_tag_lowercases() {
+        assert_eq!(validate_tag("HoMe").unwrap(), "home");
+    }
+
+    #[test]
+    fn validate_tag_rejects_invalid_tags_showing_them_as_typed() {
+        for tag in ["", "_x", "-x", "a b", "caffè", "b@d", "c!"] {
+            assert_eq!(
+                validate_tag(tag).unwrap_err().to_string(),
+                format!(
+                    "invalid tag '{tag}': use 1-32 letters, digits, '-' or '_', starting with a letter or digit"
+                )
+            );
+        }
+        assert!(validate_tag(&"a".repeat(33)).is_err());
+    }
+
+    #[test]
+    fn normalise_tags_deduplicates_keeping_first_occurrence_order() {
+        assert_eq!(normalise_tags(&["b", "a", "B"]).unwrap(), ["b", "a"]);
+        assert_eq!(
+            normalise_tags(&["Home", "shopping", "HOME"]).unwrap(),
+            ["home", "shopping"]
+        );
+    }
+
+    #[test]
+    fn normalise_tags_accepts_no_tags() {
+        assert!(normalise_tags::<&str>(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn normalise_tags_reports_the_first_invalid_tag() {
+        let err = normalise_tags(&["ok", "b@d", "c!"]).unwrap_err();
+        assert!(matches!(err, Error::InvalidTag(tag) if tag == "b@d"));
     }
 
     #[test]
