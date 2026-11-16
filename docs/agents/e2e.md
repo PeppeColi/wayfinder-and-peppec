@@ -1,5 +1,7 @@
 # End-to-end tests
 
+**End-to-end tests per feature: on.** `PEPPEC_E2E_FEATURE` is set: a specification decides them in its "End-to-end" section. Kept up to date by `peppec init`.
+
 How this repository writes and runs its end-to-end tests. Planning sessions read it when a
 specification decides whether a feature needs new ones (the "End-to-end" section, see the PEPPEC
 section of CLAUDE.md); the agent reads it when a work unit writes them.
