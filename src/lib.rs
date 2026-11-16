@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use serde::{Deserialize, Serialize};
 
 /// The only Notebook format version this program reads and writes.
@@ -66,6 +67,8 @@ pub enum Error {
     CreateDirectory { path: PathBuf, source: io::Error },
     /// The Notebook cannot be written.
     WriteNotebook { path: PathBuf, source: io::Error },
+    /// The output cannot be written to stdout (any error but a closed pipe).
+    WriteOutput { source: io::Error },
 }
 
 impl fmt::Display for Error {
@@ -123,6 +126,9 @@ impl fmt::Display for Error {
                     path.display(),
                     source.kind()
                 )
+            }
+            Error::WriteOutput { source } => {
+                write!(f, "cannot write output: {}", source.kind())
             }
         }
     }
@@ -297,9 +303,176 @@ pub fn add(path: &Path, text: &str, tags: &[String], now: Timestamp) -> Result<(
     write_notebook(path, &notebook)
 }
 
+/// Width of `YYYY-MM-DD HH:MM  `: the indent of continuation lines.
+const CONTINUATION_INDENT: usize = 18;
+
+/// The notes most recent first: by `created` descending; at equal instants the
+/// note later in `notes` comes first.
+pub fn order_notes(notes: &[Note]) -> Vec<&Note> {
+    let mut indexed: Vec<(usize, &Note)> = notes.iter().enumerate().collect();
+    indexed.sort_by(|(ia, a), (ib, b)| b.created.cmp(&a.created).then(ib.cmp(ia)));
+    indexed.into_iter().map(|(_, note)| note).collect()
+}
+
+/// One note as listed: local `YYYY-MM-DD HH:MM`, two spaces, the text
+/// (continuation lines indented), then `  [tag1, tag2]` if it has tags. No
+/// trailing newline.
+pub fn format_note(note: &Note, tz: &TimeZone) -> String {
+    let when = tz.to_datetime(note.created).strftime("%Y-%m-%d %H:%M");
+    let indent = " ".repeat(CONTINUATION_INDENT);
+    let mut line = format!("{when}  ");
+    for (i, part) in note.text.split('\n').enumerate() {
+        if i > 0 {
+            line.push('\n');
+            line.push_str(&indent);
+        }
+        line.push_str(part);
+    }
+    if !note.tags.is_empty() {
+        line.push_str("  [");
+        line.push_str(&note.tags.join(", "));
+        line.push(']');
+    }
+    line
+}
+
+/// Writes the notes, most recent first, one per line. A closed pipe stops the
+/// output quietly and succeeds; any other write error is an [`Error`].
+pub fn write_notes<W: Write>(out: &mut W, notes: &[Note], tz: &TimeZone) -> Result<(), Error> {
+    for note in order_notes(notes) {
+        match writeln!(out, "{}", format_note(note, tz)) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::BrokenPipe => return Ok(()),
+            Err(source) => return Err(Error::WriteOutput { source }),
+        }
+    }
+    match out.flush() {
+        Err(source) if source.kind() != io::ErrorKind::BrokenPipe => {
+            Err(Error::WriteOutput { source })
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `notes list`: prints every note of the Notebook at `path` to `out`; when
+/// there are none, prints `No notes.` to `err` instead. Never creates the file.
+pub fn list<W: Write, E: Write>(
+    path: &Path,
+    tz: &TimeZone,
+    out: &mut W,
+    err: &mut E,
+) -> Result<(), Error> {
+    let notebook = read_notebook(path)?;
+    if notebook.notes.is_empty() {
+        let _ = writeln!(err, "No notes.");
+        return Ok(());
+    }
+    write_notes(out, &notebook.notes, tz)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn note(text: &str, tags: &[&str], created: &str) -> Note {
+        Note {
+            text: text.to_string(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            created: created.parse().unwrap(),
+        }
+    }
+
+    fn texts(notes: &[Note]) -> Vec<&str> {
+        order_notes(notes).iter().map(|n| n.text.as_str()).collect()
+    }
+
+    #[test]
+    fn order_is_created_descending() {
+        let notes = [
+            note("a", &[], "2026-11-14T09:00:00Z"),
+            note("b", &[], "2026-11-15T09:00:00Z"),
+        ];
+        assert_eq!(texts(&notes), ["b", "a"]);
+    }
+
+    #[test]
+    fn order_ties_put_the_later_note_first() {
+        let notes = [
+            note("a", &[], "2026-11-14T09:00:00Z"),
+            note("b", &[], "2026-11-14T09:00:00Z"),
+            note("c", &[], "2026-11-14T09:00:00Z"),
+        ];
+        assert_eq!(texts(&notes), ["c", "b", "a"]);
+    }
+
+    #[test]
+    fn order_uses_the_instant_even_when_a_later_note_has_an_earlier_one() {
+        let notes = [
+            note("a", &[], "2026-11-15T09:00:00Z"),
+            note("b", &[], "2026-11-14T09:00:00Z"),
+        ];
+        assert_eq!(texts(&notes), ["a", "b"]);
+    }
+
+    #[test]
+    fn format_with_tags() {
+        let n = note("Buy milk", &["home", "shopping"], "2026-11-15T22:00:00Z");
+        assert_eq!(
+            format_note(&n, &TimeZone::UTC),
+            "2026-11-15 22:00  Buy milk  [home, shopping]"
+        );
+    }
+
+    #[test]
+    fn format_without_tags_has_no_trailing_spaces() {
+        let n = note("Call Anna", &[], "2026-11-15T21:00:00Z");
+        assert_eq!(
+            format_note(&n, &TimeZone::UTC),
+            "2026-11-15 21:00  Call Anna"
+        );
+    }
+
+    #[test]
+    fn format_multi_line_indents_continuations_and_tags_follow_the_last_line() {
+        let n = note("first\nsecond", &["work"], "2026-11-14T09:05:00Z");
+        assert_eq!(
+            format_note(&n, &TimeZone::UTC),
+            "2026-11-14 09:05  first\n                  second  [work]"
+        );
+    }
+
+    #[test]
+    fn format_uses_the_time_zone_passed_in() {
+        let n = note("x", &[], "2026-11-15T22:00:00Z");
+        let rome = TimeZone::get("Europe/Rome").unwrap();
+        assert_eq!(format_note(&n, &rome), "2026-11-15 23:00  x");
+    }
+
+    struct FailingWriter(io::ErrorKind);
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(self.0))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::from(self.0))
+        }
+    }
+
+    #[test]
+    fn write_notes_broken_pipe_is_a_quiet_success() {
+        let notes = [note("a", &[], "2026-11-14T09:00:00Z")];
+        let mut out = FailingWriter(io::ErrorKind::BrokenPipe);
+        assert!(write_notes(&mut out, &notes, &TimeZone::UTC).is_ok());
+    }
+
+    #[test]
+    fn write_notes_other_errors_fail_with_the_reason() {
+        let notes = [note("a", &[], "2026-11-14T09:00:00Z")];
+        let mut out = FailingWriter(io::ErrorKind::PermissionDenied);
+        let err = write_notes(&mut out, &notes, &TimeZone::UTC).unwrap_err();
+        assert_eq!(err.to_string(), "cannot write output: permission denied");
+    }
 
     fn instant(value: &str) -> Timestamp {
         value.parse().unwrap()
