@@ -394,6 +394,18 @@ pub fn write_notes<W: Write>(out: &mut W, notes: &[Note], tz: &TimeZone) -> Resu
     }
 }
 
+/// `notes ping`: writes `pong` `times` times on one line, joined by single
+/// spaces, then a newline. It never touches the Notebook. A closed pipe stops
+/// the output quietly and succeeds; any other write error is an [`Error`].
+pub fn ping<W: Write>(out: &mut W, times: u16) -> Result<(), Error> {
+    let line = vec!["pong"; usize::from(times)].join(" ");
+    match writeln!(out, "{line}").and_then(|()| out.flush()) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(source) => Err(Error::WriteOutput { source }),
+    }
+}
+
 /// `notes list`: prints every note of the Notebook at `path` to `out`; when
 /// there are none, prints `No notes.` to `err` instead. Never creates the file.
 pub fn list<W: Write, E: Write>(
