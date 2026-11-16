@@ -370,6 +370,31 @@ pub fn list<W: Write, E: Write>(
     write_notes(out, &notebook.notes, tz)
 }
 
+/// `notes search <TAG>`: prints the notes of the Notebook at `path` that carry
+/// `tag`, in the layout and order of [`list`]; when there are none, prints
+/// `No notes tagged <tag>.` (lowercased) to `err` instead. The tag is validated
+/// before the Notebook is read. Never creates the file.
+pub fn search<W: Write, E: Write>(
+    path: &Path,
+    tag: &str,
+    tz: &TimeZone,
+    out: &mut W,
+    err: &mut E,
+) -> Result<(), Error> {
+    let tag = validate_tag(tag)?;
+    let notebook = read_notebook(path)?;
+    let matches: Vec<Note> = notebook
+        .notes
+        .into_iter()
+        .filter(|note| note.tags.contains(&tag))
+        .collect();
+    if matches.is_empty() {
+        let _ = writeln!(err, "No notes tagged {tag}.");
+        return Ok(());
+    }
+    write_notes(out, &matches, tz)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
