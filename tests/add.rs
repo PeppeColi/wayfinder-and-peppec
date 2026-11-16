@@ -282,3 +282,109 @@ fn an_invalid_tag_is_reported_before_an_invalid_clock() {
         .code(1)
         .stderr(format!("error: invalid tag 'caffè': {INVALID_TAG_HINT}\n"));
 }
+
+fn stored_text(env: &TestEnv) -> serde_json::Value {
+    read_json(&env.notebook())["notes"][0]["text"].clone()
+}
+
+#[test]
+fn text_keeps_its_inner_line_breaks() {
+    let env = TestEnv::new();
+
+    env.notes()
+        .args(["add", "first\nsecond"])
+        .assert()
+        .success()
+        .stdout("")
+        .stderr("");
+
+    assert_eq!(stored_text(&env), json!("first\nsecond"));
+}
+
+#[test]
+fn text_is_trimmed_and_crlf_line_endings_become_newlines() {
+    let env = TestEnv::new();
+
+    env.notes()
+        .args(["add", "  Buy milk \r\n"])
+        .assert()
+        .success();
+
+    assert_eq!(stored_text(&env), json!("Buy milk"));
+}
+
+#[test]
+fn crlf_and_lone_cr_line_endings_become_newlines() {
+    let env = TestEnv::new();
+
+    env.notes().args(["add", "a\r\nb\rc"]).assert().success();
+
+    assert_eq!(stored_text(&env), json!("a\nb\nc"));
+}
+
+#[test]
+fn text_keeps_blank_lines_and_indentation() {
+    let env = TestEnv::new();
+
+    env.notes()
+        .args(["add", "  para one\n\n    indented"])
+        .assert()
+        .success();
+
+    assert_eq!(stored_text(&env), json!("para one\n\n    indented"));
+}
+
+#[test]
+fn text_keeps_a_tab_inside_it() {
+    let env = TestEnv::new();
+
+    env.notes().args(["add", "col1\tcol2"]).assert().success();
+
+    assert_eq!(stored_text(&env), json!("col1\tcol2"));
+}
+
+#[test]
+fn empty_or_blank_text_is_refused_and_nothing_is_saved() {
+    for text in ["", " \t\n"] {
+        let env = TestEnv::new();
+
+        env.notes()
+            .args(["add", text])
+            .assert()
+            .code(1)
+            .stdout("")
+            .stderr("error: note text is empty\n");
+
+        assert!(!env.notebook().exists());
+    }
+}
+
+#[test]
+fn empty_text_leaves_an_existing_notebook_unchanged() {
+    let env = TestEnv::new();
+    env.notes().args(["add", "first"]).assert().success();
+    let before = fs::read(env.notebook()).unwrap();
+
+    env.notes()
+        .args(["add", " \t\n"])
+        .assert()
+        .code(1)
+        .stderr("error: note text is empty\n");
+
+    assert_eq!(fs::read(env.notebook()).unwrap(), before);
+}
+
+#[test]
+fn empty_text_is_reported_before_an_invalid_tag_and_clock() {
+    let env = TestEnv::new();
+
+    env.notes()
+        .env("NOTES_NOW", "xyz")
+        .args(["add", "", "-t", "caffè"])
+        .assert()
+        .code(1)
+        .stdout("")
+        .stderr("error: note text is empty\n");
+
+    assert!(!env.notebook().exists());
+}
