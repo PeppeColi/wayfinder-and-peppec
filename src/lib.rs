@@ -48,6 +48,8 @@ struct NotebookFileIn {
 /// `error: `.
 #[derive(Debug)]
 pub enum Error {
+    /// The text of a Note is empty once trimmed.
+    EmptyText,
     /// A tag breaks the Tag rules (tag as given).
     InvalidTag(String),
     /// `NOTES_NOW` does not hold an RFC 3339 instant (value as given).
@@ -69,6 +71,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Error::EmptyText => write!(f, "note text is empty"),
             Error::InvalidTag(tag) => {
                 write!(
                     f,
@@ -126,6 +129,19 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// Normalises the text of a Note: every `\r\n` and lone `\r` becomes `\n`,
+/// then leading and trailing white space is trimmed. The inside is kept as
+/// it is. Text that is empty after trimming is an error.
+pub fn normalise_text(text: &str) -> Result<String, Error> {
+    let lines = text.replace("\r\n", "\n").replace('\r', "\n");
+    let trimmed = lines.trim();
+    if trimmed.is_empty() {
+        Err(Error::EmptyText)
+    } else {
+        Ok(trimmed.to_owned())
+    }
+}
 
 /// Longest valid tag, in characters.
 const MAX_TAG_LEN: usize = 32;
@@ -367,6 +383,34 @@ mod tests {
     fn normalise_tags_reports_the_first_invalid_tag() {
         let err = normalise_tags(&["ok", "b@d", "c!"]).unwrap_err();
         assert!(matches!(err, Error::InvalidTag(tag) if tag == "b@d"));
+    }
+
+    #[test]
+    fn normalise_text_converts_every_line_ending_to_newline() {
+        assert_eq!(normalise_text("a\r\nb\rc\nd").unwrap(), "a\nb\nc\nd");
+        assert_eq!(normalise_text("a\r\r\nb").unwrap(), "a\n\nb");
+    }
+
+    #[test]
+    fn normalise_text_trims_unicode_white_space_at_both_ends() {
+        assert_eq!(normalise_text("  Buy milk \r\n").unwrap(), "Buy milk");
+        assert_eq!(normalise_text("\u{3000}caffè\u{2003}").unwrap(), "caffè");
+    }
+
+    #[test]
+    fn normalise_text_keeps_the_inside_unchanged() {
+        assert_eq!(
+            normalise_text("  para one\n\n    indented\tcol  ").unwrap(),
+            "para one\n\n    indented\tcol"
+        );
+    }
+
+    #[test]
+    fn normalise_text_refuses_empty_or_blank_text() {
+        for text in ["", " \t\r\n ", "\r", "\u{00a0}"] {
+            let err = normalise_text(text).unwrap_err();
+            assert_eq!(err.to_string(), "note text is empty");
+        }
     }
 
     #[test]

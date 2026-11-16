@@ -70,6 +70,7 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<(), wayfinder_and_peppec::Error> {
     match cli.command {
         Command::Add { text, tags } => {
+            let text = wayfinder_and_peppec::normalise_text(&text)?;
             let tags = wayfinder_and_peppec::normalise_tags(&tags)?;
             let now = now(std::env::var_os("NOTES_NOW"))?;
             let path = wayfinder_and_peppec::notebook_location(
