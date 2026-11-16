@@ -19,3 +19,7 @@ _Avoid_: Store, database, collection
 **Export**:
 A copy of the notes written to a file the user chooses.
 _Avoid_: Dump, backup
+
+**Ping**:
+The subcommand that prints `pong`, repeated N times with `-n N`. It neither reads nor writes the Notebook.
+_Avoid_: Health check, echo
