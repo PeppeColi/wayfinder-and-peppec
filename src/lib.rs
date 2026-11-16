@@ -285,7 +285,7 @@ pub fn write_notebook(path: &Path, notebook: &Notebook) -> Result<(), Error> {
     };
     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
     let temp = dir.join(format!(".{file_name}.{}.tmp", process::id()));
-    let result = write_file(&temp, render_notebook(notebook).as_bytes()).and_then(|()| {
+    let result = write_file(&temp, render_notebook(notebook).as_bytes(), 0o666).and_then(|()| {
         // Keep any permissions the user set on the existing Notebook.
         if let Ok(metadata) = fs::metadata(path) {
             fs::set_permissions(&temp, metadata.permissions())?;
@@ -300,12 +300,16 @@ pub fn write_notebook(path: &Path, notebook: &Notebook) -> Result<(), Error> {
 }
 
 /// Writes `content` to a new file at `path`; fails if anything, even a
-/// symlink, already exists there.
-fn write_file(path: &Path, content: &[u8]) -> io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
+/// symlink, already exists there. On Unix the file is created with `mode`
+/// (reduced by the umask), so it is never more readable than intended.
+fn write_file(path: &Path, content: &[u8], mode: u32) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, mode);
+    #[cfg(not(unix))]
+    let _ = mode;
+    let mut file = options.open(path)?;
     file.write_all(content)?;
     file.sync_all()
 }
@@ -450,10 +454,20 @@ pub fn export(notebook: &Path, target: &Path, force: bool, tz: &TimeZone) -> Res
 
     let file_name = target.file_name().unwrap_or_default().to_string_lossy();
     let temp = dir.join(format!(".{file_name}.{}.tmp", process::id()));
-    let result = write_file(&temp, render_markdown(&notes, tz).as_bytes())
+    // Keep the mode of the file being replaced; a new Export gets `0644`.
+    #[cfg(unix)]
+    let mode = fs::metadata(target).map_or(0o644, |m| {
+        std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o777
+    });
+    #[cfg(not(unix))]
+    let mode = 0o644;
+    let result = write_file(&temp, render_markdown(&notes, tz).as_bytes(), mode)
         .and_then(|()| fs::rename(&temp, target));
     if let Err(source) = result {
-        let _ = fs::remove_file(&temp);
+        // AlreadyExists means another writer owns the temporary path.
+        if source.kind() != io::ErrorKind::AlreadyExists {
+            let _ = fs::remove_file(&temp);
+        }
         return Err(Error::WriteTarget {
             path: target.to_path_buf(),
             source,
@@ -786,5 +800,36 @@ mod tests {
 
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_keeps_the_permissions_of_the_replaced_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.md");
+        fs::write(&target, "old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let notebook = dir.path().join("missing.json");
+        export(&notebook, &target, true, &TimeZone::UTC).unwrap();
+
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn export_does_not_remove_a_temporary_file_it_did_not_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.md");
+        let temp = dir.path().join(format!(".out.md.{}.tmp", process::id()));
+        fs::write(&temp, "someone else's").unwrap();
+
+        let notebook = dir.path().join("missing.json");
+        let result = export(&notebook, &target, false, &TimeZone::UTC);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&temp).unwrap(), "someone else's");
     }
 }
