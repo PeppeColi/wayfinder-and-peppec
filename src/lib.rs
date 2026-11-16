@@ -235,7 +235,15 @@ pub fn notebook_location(
 pub fn read_notebook(path: &Path) -> Result<Notebook, Error> {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Notebook::default()),
+        // A file where a parent directory should be means no Notebook yet.
+        Err(err)
+            if matches!(
+                err.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(Notebook::default());
+        }
         Err(source) => {
             return Err(Error::ReadNotebook {
                 path: path.to_path_buf(),
@@ -260,7 +268,7 @@ fn parse_notebook(content: &str, path: &Path) -> Result<Notebook, Error> {
             version,
         });
     }
-    let file: NotebookFileIn = serde_json::from_value(value).map_err(invalid)?;
+    let file: NotebookFileIn = serde_json::from_str(content).map_err(invalid)?;
     debug_assert_eq!(file.version, NOTEBOOK_VERSION);
     Ok(Notebook { notes: file.notes })
 }
@@ -698,6 +706,15 @@ mod tests {
         assert_eq!(
             normalise_tags(&["Home", "shopping", "HOME"]).unwrap(),
             ["home", "shopping"]
+        );
+    }
+
+    #[test]
+    fn notebook_location_without_any_location_is_an_error() {
+        let err = notebook_location(None, None).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "cannot find a data directory; use --notebook or NOTES_NOTEBOOK"
         );
     }
 
