@@ -97,7 +97,24 @@ fn run(cli: Cli) -> Result<(), wayfinder_and_peppec::Error> {
             let mut out = io::BufWriter::new(io::stdout().lock());
             wayfinder_and_peppec::search(&path, &tag, &tz, &mut out, &mut io::stderr().lock())
         }
-        Command::Export { .. } => Ok(()),
+        Command::Export {
+            force,
+            path: target,
+        } => {
+            let path = wayfinder_and_peppec::notebook_location(
+                cli.notebook.as_deref(),
+                dirs::data_dir().as_deref(),
+            )?;
+            let tz = jiff::tz::TimeZone::system();
+            let count = wayfinder_and_peppec::export(&path, &target, force, &tz)?;
+            let noun = if count == 1 { "note" } else { "notes" };
+            let _ = writeln!(
+                io::stderr().lock(),
+                "Exported {count} {noun} to {}",
+                target.display()
+            );
+            Ok(())
+        }
     }
 }
 

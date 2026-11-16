@@ -69,6 +69,12 @@ pub enum Error {
     WriteNotebook { path: PathBuf, source: io::Error },
     /// The output cannot be written to stdout (any error but a closed pipe).
     WriteOutput { source: io::Error },
+    /// The export target exists and `--force` was not given.
+    TargetExists { path: PathBuf },
+    /// The directory of the export target does not exist.
+    DirectoryMissing { path: PathBuf },
+    /// The export target cannot be written.
+    WriteTarget { path: PathBuf, source: io::Error },
 }
 
 impl fmt::Display for Error {
@@ -129,6 +135,19 @@ impl fmt::Display for Error {
             }
             Error::WriteOutput { source } => {
                 write!(f, "cannot write output: {}", source.kind())
+            }
+            Error::TargetExists { path } => {
+                write!(
+                    f,
+                    "{} already exists; use --force to overwrite",
+                    path.display()
+                )
+            }
+            Error::DirectoryMissing { path } => {
+                write!(f, "directory {} does not exist", path.display())
+            }
+            Error::WriteTarget { path, source } => {
+                write!(f, "cannot write {}: {}", path.display(), source.kind())
             }
         }
     }
@@ -395,6 +414,54 @@ pub fn search<W: Write, E: Write>(
     write_notes(out, &matches, tz)
 }
 
+/// The Markdown of an Export: a `# Notes` title, then every note in the order
+/// of [`order_notes`], with its heading in the time zone `tz`.
+pub fn render_markdown(notes: &[Note], tz: &TimeZone) -> String {
+    let mut out = String::from("# Notes\n");
+    for note in order_notes(notes) {
+        let when = tz.to_datetime(note.created).strftime("%Y-%m-%d %H:%M");
+        out.push_str(&format!("\n## {when}\n\n{}\n", note.text));
+        if !note.tags.is_empty() {
+            out.push_str(&format!("\nTags: {}\n", note.tags.join(", ")));
+        }
+    }
+    out
+}
+
+/// Writes the whole Notebook at `notebook` to `target` as Markdown and returns
+/// the number of notes exported. An existing target is replaced only with
+/// `force`; the target's directory is never created. The write is atomic.
+pub fn export(notebook: &Path, target: &Path, force: bool, tz: &TimeZone) -> Result<usize, Error> {
+    let dir = match target.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    if !dir.is_dir() {
+        return Err(Error::DirectoryMissing {
+            path: dir.to_path_buf(),
+        });
+    }
+    if !force && fs::symlink_metadata(target).is_ok() {
+        return Err(Error::TargetExists {
+            path: target.to_path_buf(),
+        });
+    }
+    let notes = read_notebook(notebook)?.notes;
+
+    let file_name = target.file_name().unwrap_or_default().to_string_lossy();
+    let temp = dir.join(format!(".{file_name}.{}.tmp", process::id()));
+    let result = write_file(&temp, render_markdown(&notes, tz).as_bytes())
+        .and_then(|()| fs::rename(&temp, target));
+    if let Err(source) = result {
+        let _ = fs::remove_file(&temp);
+        return Err(Error::WriteTarget {
+            path: target.to_path_buf(),
+            source,
+        });
+    }
+    Ok(notes.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,6 +538,37 @@ mod tests {
         let n = note("x", &[], "2026-11-15T22:00:00Z");
         let rome = TimeZone::get("Europe/Rome").unwrap();
         assert_eq!(format_note(&n, &rome), "2026-11-15 23:00  x");
+    }
+
+    #[test]
+    fn markdown_layout() {
+        let notes = [
+            note("Call Anna", &[], "2026-11-15T21:00:00Z"),
+            note("Buy milk", &["home", "shopping"], "2026-11-15T22:00:00Z"),
+            note("first\nsecond", &["work"], "2026-11-14T09:05:00Z"),
+        ];
+        assert_eq!(
+            render_markdown(&notes, &TimeZone::UTC),
+            "# Notes\n\n## 2026-11-15 22:00\n\nBuy milk\n\nTags: home, shopping\n\n## 2026-11-15 21:00\n\nCall Anna\n\n## 2026-11-14 09:05\n\nfirst\nsecond\n\nTags: work\n"
+        );
+    }
+
+    #[test]
+    fn markdown_of_no_notes_is_the_title() {
+        assert_eq!(render_markdown(&[], &TimeZone::UTC), "# Notes\n");
+    }
+
+    #[test]
+    fn markdown_does_not_escape_the_text() {
+        let notes = [note("# not *a* heading", &[], "2026-11-15T21:00:00Z")];
+        assert!(render_markdown(&notes, &TimeZone::UTC).contains("\n\n# not *a* heading\n"));
+    }
+
+    #[test]
+    fn markdown_uses_the_time_zone_passed_in() {
+        let notes = [note("x", &[], "2026-11-15T22:00:00Z")];
+        let rome = TimeZone::get("Europe/Rome").unwrap();
+        assert!(render_markdown(&notes, &rome).contains("## 2026-11-15 23:00\n"));
     }
 
     struct FailingWriter(io::ErrorKind);
