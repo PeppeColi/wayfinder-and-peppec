@@ -73,6 +73,8 @@ pub enum Error {
     TargetExists { path: PathBuf },
     /// The directory of the export target does not exist.
     DirectoryMissing { path: PathBuf },
+    /// The export target is the Notebook itself.
+    TargetIsNotebook { path: PathBuf },
     /// The export target cannot be written.
     WriteTarget { path: PathBuf, source: io::Error },
 }
@@ -145,6 +147,13 @@ impl fmt::Display for Error {
             }
             Error::DirectoryMissing { path } => {
                 write!(f, "directory {} does not exist", path.display())
+            }
+            Error::TargetIsNotebook { path } => {
+                write!(
+                    f,
+                    "{} is the Notebook; choose a different export target",
+                    path.display()
+                )
             }
             Error::WriteTarget { path, source } => {
                 write!(f, "cannot write {}: {}", path.display(), source.kind())
@@ -443,6 +452,14 @@ pub fn export(notebook: &Path, target: &Path, force: bool, tz: &TimeZone) -> Res
     if !dir.is_dir() {
         return Err(Error::DirectoryMissing {
             path: dir.to_path_buf(),
+        });
+    }
+    // An Export never writes the Notebook, with or without `force`.
+    if let (Ok(t), Ok(n)) = (fs::canonicalize(target), fs::canonicalize(notebook))
+        && t == n
+    {
+        return Err(Error::TargetIsNotebook {
+            path: target.to_path_buf(),
         });
     }
     if !force && fs::symlink_metadata(target).is_ok() {

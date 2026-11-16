@@ -216,3 +216,57 @@ fn export_uses_the_time_zone_from_tz() {
     let content = fs::read_to_string(env.dir().join("out.md")).unwrap();
     assert_eq!(content.lines().nth(2), Some("## 2026-11-15 23:00"));
 }
+
+#[test]
+fn export_with_force_refuses_the_notebook_as_target() {
+    let env = TestEnv::new();
+    three_notes(&env);
+    let before = fs::read_to_string(env.notebook()).unwrap();
+
+    env.notes()
+        .args(["export", "--force", "notebook.json"])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout("")
+        .stderr("error: notebook.json is the Notebook; choose a different export target\n");
+
+    assert_eq!(fs::read_to_string(env.notebook()).unwrap(), before);
+    assert_eq!(file_names(&env), ["notebook.json"]);
+}
+
+#[test]
+fn export_without_force_refuses_the_notebook_as_target() {
+    let env = TestEnv::new();
+    three_notes(&env);
+    let before = fs::read_to_string(env.notebook()).unwrap();
+
+    env.notes()
+        .args(["export", "./notebook.json"])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout("")
+        .stderr("error: ./notebook.json is the Notebook; choose a different export target\n");
+
+    assert_eq!(fs::read_to_string(env.notebook()).unwrap(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn export_refuses_a_symlink_to_the_notebook_as_target() {
+    let env = TestEnv::new();
+    three_notes(&env);
+    let before = fs::read_to_string(env.notebook()).unwrap();
+    std::os::unix::fs::symlink(env.notebook(), env.dir().join("alias.json")).unwrap();
+
+    env.notes()
+        .args(["export", "--force", "alias.json"])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout("")
+        .stderr("error: alias.json is the Notebook; choose a different export target\n");
+
+    assert_eq!(fs::read_to_string(env.notebook()).unwrap(), before);
+}

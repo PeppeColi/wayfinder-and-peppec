@@ -15,4 +15,4 @@ lines under a new heading with the version and the date.
 - `notes add` keeps line breaks inside the text, turns Windows line endings into newlines, trims spaces and blank lines around it, and refuses text that is empty.
 - `notes list` prints every note, most recent first, with its local date and time, text and tags, and says `No notes.` on stderr when there are none.
 - `notes search <TAG>` prints the notes with that tag (ignoring capitalisation), in the same layout and order as `list`, and says `No notes tagged <tag>.` on stderr when there are none.
-- `notes export [--force] <PATH>` writes the whole Notebook to a Markdown file, most recent note first; it refuses to replace an existing file without `--force` and never creates directories.
+- `notes export [--force] <PATH>` writes the whole Notebook to a Markdown file, most recent note first; it refuses to replace an existing file without `--force`, never creates directories and never overwrites the Notebook itself.
