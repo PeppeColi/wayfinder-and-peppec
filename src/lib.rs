@@ -69,6 +69,14 @@ pub enum Error {
     WriteNotebook { path: PathBuf, source: io::Error },
     /// The output cannot be written to stdout (any error but a closed pipe).
     WriteOutput { source: io::Error },
+    /// The export target exists and `--force` was not given.
+    TargetExists { path: PathBuf },
+    /// The directory of the export target does not exist.
+    DirectoryMissing { path: PathBuf },
+    /// The export target is the Notebook itself.
+    TargetIsNotebook { path: PathBuf },
+    /// The export target cannot be written.
+    WriteTarget { path: PathBuf, source: io::Error },
 }
 
 impl fmt::Display for Error {
@@ -129,6 +137,26 @@ impl fmt::Display for Error {
             }
             Error::WriteOutput { source } => {
                 write!(f, "cannot write output: {}", source.kind())
+            }
+            Error::TargetExists { path } => {
+                write!(
+                    f,
+                    "{} already exists; use --force to overwrite",
+                    path.display()
+                )
+            }
+            Error::DirectoryMissing { path } => {
+                write!(f, "directory {} does not exist", path.display())
+            }
+            Error::TargetIsNotebook { path } => {
+                write!(
+                    f,
+                    "{} is the Notebook; choose a different export target",
+                    path.display()
+                )
+            }
+            Error::WriteTarget { path, source } => {
+                write!(f, "cannot write {}: {}", path.display(), source.kind())
             }
         }
     }
@@ -266,7 +294,7 @@ pub fn write_notebook(path: &Path, notebook: &Notebook) -> Result<(), Error> {
     };
     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
     let temp = dir.join(format!(".{file_name}.{}.tmp", process::id()));
-    let result = write_file(&temp, render_notebook(notebook).as_bytes()).and_then(|()| {
+    let result = write_file(&temp, render_notebook(notebook).as_bytes(), 0o666).and_then(|()| {
         // Keep any permissions the user set on the existing Notebook.
         if let Ok(metadata) = fs::metadata(path) {
             fs::set_permissions(&temp, metadata.permissions())?;
@@ -281,12 +309,16 @@ pub fn write_notebook(path: &Path, notebook: &Notebook) -> Result<(), Error> {
 }
 
 /// Writes `content` to a new file at `path`; fails if anything, even a
-/// symlink, already exists there.
-fn write_file(path: &Path, content: &[u8]) -> io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
+/// symlink, already exists there. On Unix the file is created with `mode`
+/// (reduced by the umask), so it is never more readable than intended.
+fn write_file(path: &Path, content: &[u8], mode: u32) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, mode);
+    #[cfg(not(unix))]
+    let _ = mode;
+    let mut file = options.open(path)?;
     file.write_all(content)?;
     file.sync_all()
 }
@@ -395,6 +427,72 @@ pub fn search<W: Write, E: Write>(
     write_notes(out, &matches, tz)
 }
 
+/// The Markdown of an Export: a `# Notes` title, then every note in the order
+/// of [`order_notes`], with its heading in the time zone `tz`.
+pub fn render_markdown(notes: &[Note], tz: &TimeZone) -> String {
+    let mut out = String::from("# Notes\n");
+    for note in order_notes(notes) {
+        let when = tz.to_datetime(note.created).strftime("%Y-%m-%d %H:%M");
+        out.push_str(&format!("\n## {when}\n\n{}\n", note.text));
+        if !note.tags.is_empty() {
+            out.push_str(&format!("\nTags: {}\n", note.tags.join(", ")));
+        }
+    }
+    out
+}
+
+/// Writes the whole Notebook at `notebook` to `target` as Markdown and returns
+/// the number of notes exported. An existing target is replaced only with
+/// `force`; the target's directory is never created. The write is atomic.
+pub fn export(notebook: &Path, target: &Path, force: bool, tz: &TimeZone) -> Result<usize, Error> {
+    let dir = match target.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    if !dir.is_dir() {
+        return Err(Error::DirectoryMissing {
+            path: dir.to_path_buf(),
+        });
+    }
+    // An Export never writes the Notebook, with or without `force`.
+    if let (Ok(t), Ok(n)) = (fs::canonicalize(target), fs::canonicalize(notebook))
+        && t == n
+    {
+        return Err(Error::TargetIsNotebook {
+            path: target.to_path_buf(),
+        });
+    }
+    if !force && fs::symlink_metadata(target).is_ok() {
+        return Err(Error::TargetExists {
+            path: target.to_path_buf(),
+        });
+    }
+    let notes = read_notebook(notebook)?.notes;
+
+    let file_name = target.file_name().unwrap_or_default().to_string_lossy();
+    let temp = dir.join(format!(".{file_name}.{}.tmp", process::id()));
+    // Keep the mode of the file being replaced; a new Export gets `0644`.
+    #[cfg(unix)]
+    let mode = fs::metadata(target).map_or(0o644, |m| {
+        std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o777
+    });
+    #[cfg(not(unix))]
+    let mode = 0o644;
+    let result = write_file(&temp, render_markdown(&notes, tz).as_bytes(), mode)
+        .and_then(|()| fs::rename(&temp, target));
+    if let Err(source) = result {
+        // AlreadyExists means another writer owns the temporary path.
+        if source.kind() != io::ErrorKind::AlreadyExists {
+            let _ = fs::remove_file(&temp);
+        }
+        return Err(Error::WriteTarget {
+            path: target.to_path_buf(),
+            source,
+        });
+    }
+    Ok(notes.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,6 +569,37 @@ mod tests {
         let n = note("x", &[], "2026-11-15T22:00:00Z");
         let rome = TimeZone::get("Europe/Rome").unwrap();
         assert_eq!(format_note(&n, &rome), "2026-11-15 23:00  x");
+    }
+
+    #[test]
+    fn markdown_layout() {
+        let notes = [
+            note("Call Anna", &[], "2026-11-15T21:00:00Z"),
+            note("Buy milk", &["home", "shopping"], "2026-11-15T22:00:00Z"),
+            note("first\nsecond", &["work"], "2026-11-14T09:05:00Z"),
+        ];
+        assert_eq!(
+            render_markdown(&notes, &TimeZone::UTC),
+            "# Notes\n\n## 2026-11-15 22:00\n\nBuy milk\n\nTags: home, shopping\n\n## 2026-11-15 21:00\n\nCall Anna\n\n## 2026-11-14 09:05\n\nfirst\nsecond\n\nTags: work\n"
+        );
+    }
+
+    #[test]
+    fn markdown_of_no_notes_is_the_title() {
+        assert_eq!(render_markdown(&[], &TimeZone::UTC), "# Notes\n");
+    }
+
+    #[test]
+    fn markdown_does_not_escape_the_text() {
+        let notes = [note("# not *a* heading", &[], "2026-11-15T21:00:00Z")];
+        assert!(render_markdown(&notes, &TimeZone::UTC).contains("\n\n# not *a* heading\n"));
+    }
+
+    #[test]
+    fn markdown_uses_the_time_zone_passed_in() {
+        let notes = [note("x", &[], "2026-11-15T22:00:00Z")];
+        let rome = TimeZone::get("Europe/Rome").unwrap();
+        assert!(render_markdown(&notes, &rome).contains("## 2026-11-15 23:00\n"));
     }
 
     struct FailingWriter(io::ErrorKind);
@@ -688,5 +817,36 @@ mod tests {
 
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_keeps_the_permissions_of_the_replaced_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.md");
+        fs::write(&target, "old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let notebook = dir.path().join("missing.json");
+        export(&notebook, &target, true, &TimeZone::UTC).unwrap();
+
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn export_does_not_remove_a_temporary_file_it_did_not_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.md");
+        let temp = dir.path().join(format!(".out.md.{}.tmp", process::id()));
+        fs::write(&temp, "someone else's").unwrap();
+
+        let notebook = dir.path().join("missing.json");
+        let result = export(&notebook, &target, false, &TimeZone::UTC);
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(&temp).unwrap(), "someone else's");
     }
 }
