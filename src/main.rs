@@ -39,6 +39,18 @@ enum Command {
         #[arg(short, long = "tag", value_name = "TAG")]
         tags: Vec<String>,
     },
+    /// Reply with pong
+    Ping {
+        /// Number of pongs, 1-1000
+        #[arg(
+            short = 'n',
+            long = "times",
+            value_name = "N",
+            default_value_t = 1,
+            value_parser = clap::value_parser!(u16).range(1..=1000)
+        )]
+        times: u16,
+    },
     /// List notes, most recent first
     List,
     /// List the notes that have a tag
@@ -69,6 +81,10 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<(), wayfinder_and_peppec::Error> {
     match cli.command {
+        Command::Ping { times } => {
+            let mut out = io::BufWriter::new(io::stdout().lock());
+            wayfinder_and_peppec::ping(&mut out, times)
+        }
         Command::Add { text, tags } => {
             let text = wayfinder_and_peppec::normalise_text(&text)?;
             let tags = wayfinder_and_peppec::normalise_tags(&tags)?;
